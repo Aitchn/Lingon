@@ -19,18 +19,21 @@ public final class Lingon {
     private static final Logger LOGGER = LoggerFactory.getLogger(Lingon.class);
     private static final Pattern LOCALE_DIRECTORY_PATTERN = Pattern.compile("^[a-z]{2}_[A-Z]{2}$");
 
+    private static volatile Lingon instance;
+    private static final Object LOCK = new Object();
+
     private final Path languagePath;
     private final Map<String, Map<String, JsonNode>> rawTextsByLocale = new HashMap<>();
-    private Locale defaultLocale;
+    private volatile Locale defaultLocale;
 
     /**
-     * Initialize Lingon with specified class, path, and default locale.
+     * Private constructor to prevent direct instantiation.
      *
      * @param clazz the class to import resources from
      * @param path the base path for language files
      * @param defaultLocale the default locale to use as fallback
      */
-    public Lingon(Class<?> clazz, Path path, Locale defaultLocale) {
+    private Lingon(Class<?> clazz, Path path, Locale defaultLocale) {
         this.languagePath = path.resolve("languages");
         if (languagePath.toFile().mkdirs()) {
             LOGGER.info("Created {}", languagePath);
@@ -43,12 +46,58 @@ public final class Lingon {
     }
 
     /**
+     * Get the singleton instance of Lingon. Creates the instance if it doesn't exist.
+     *
+     * @param clazz the class to import resources from
+     * @param path the base path for language files
+     * @param defaultLocale the default locale to use as fallback
+     * @return the singleton Lingon instance
+     */
+    public static Lingon getInstance(Class<?> clazz, Path path, Locale defaultLocale) {
+        if (instance == null) {
+            synchronized (LOCK) {
+                if (instance == null) {
+                    LOGGER.info("Creating new Lingon singleton instance");
+                    instance = new Lingon(clazz, path, defaultLocale);
+                } else {
+                    LOGGER.debug("Lingon instance already exists, returning existing instance");
+                }
+            }
+        }
+        return instance;
+    }
+
+    /**
+     * Get the existing singleton instance of Lingon.
+     *
+     * @return the singleton Lingon instance
+     * @throws IllegalStateException if the instance has not been initialized yet
+     */
+    public static Lingon getInstance() {
+        if (instance == null) {
+            throw new IllegalStateException("Lingon has not been initialized. Call getInstance(Class<?>, Path, Locale) first.");
+        }
+        return instance;
+    }
+
+    /**
+     * Check if the Lingon instance has been initialized.
+     *
+     * @return true if the instance exists, false otherwise
+     */
+    public static boolean isInitialized() {
+        return instance != null;
+    }
+
+    /**
      * Load all locales and their corresponding raw text data.
      */
     private void load() {
-        List<String> localeNames = loadLocales();
-        for (String localeName : localeNames) {
-            rawTextsByLocale.put(localeName, loadRawText(localeName));
+        synchronized (rawTextsByLocale) {
+            List<String> localeNames = loadLocales();
+            for (String localeName : localeNames) {
+                rawTextsByLocale.put(localeName, loadRawText(localeName));
+            }
         }
     }
 
@@ -63,8 +112,13 @@ public final class Lingon {
         final String primaryKey = toDirectoryName(locale);
         final String fallbackKey = toDirectoryName(defaultLocale);
 
-        Map<String, JsonNode> primaryMap = rawTextsByLocale.getOrDefault(primaryKey, Collections.emptyMap());
-        Map<String, JsonNode> fallbackMap = rawTextsByLocale.getOrDefault(fallbackKey, Collections.emptyMap());
+        Map<String, JsonNode> primaryMap;
+        Map<String, JsonNode> fallbackMap;
+
+        synchronized (rawTextsByLocale) {
+            primaryMap = rawTextsByLocale.getOrDefault(primaryKey, Collections.emptyMap());
+            fallbackMap = rawTextsByLocale.getOrDefault(fallbackKey, Collections.emptyMap());
+        }
 
         JsonNode primaryNode = primaryMap.get(path);
         JsonNode fallbackNode = fallbackMap.get(path);
@@ -177,6 +231,7 @@ public final class Lingon {
      */
     public void setDefaultLocale(Locale defaultLocale) {
         this.defaultLocale = defaultLocale;
+        LOGGER.info("Default locale updated to: {}", defaultLocale);
     }
 
     /**
@@ -185,10 +240,12 @@ public final class Lingon {
      * Useful when language files have been modified at runtime.
      */
     public void reload() {
-        LOGGER.info("Reloading language data from {}", languagePath);
-        rawTextsByLocale.clear();
-        load();
-        LOGGER.info("Language data reloaded successfully for {} locales", rawTextsByLocale.size());
+        synchronized (rawTextsByLocale) {
+            LOGGER.info("Reloading language data from {}", languagePath);
+            rawTextsByLocale.clear();
+            load();
+            LOGGER.info("Language data reloaded successfully for {} locales", rawTextsByLocale.size());
+        }
     }
 
     /**
@@ -210,18 +267,20 @@ public final class Lingon {
             return false;
         }
 
-        LOGGER.debug("Reloading locale data for {}", localeName);
-        Map<String, JsonNode> localeData = loadRawText(localeName);
+        synchronized (rawTextsByLocale) {
+            LOGGER.debug("Reloading locale data for {}", localeName);
+            Map<String, JsonNode> localeData = loadRawText(localeName);
 
-        if (localeData.isEmpty()) {
-            LOGGER.warn("No data found for locale {}", localeName);
-            rawTextsByLocale.remove(localeName);
-            return false;
+            if (localeData.isEmpty()) {
+                LOGGER.warn("No data found for locale {}", localeName);
+                rawTextsByLocale.remove(localeName);
+                return false;
+            }
+
+            rawTextsByLocale.put(localeName, localeData);
+            LOGGER.info("Successfully reloaded locale {}", localeName);
+            return true;
         }
-
-        rawTextsByLocale.put(localeName, localeData);
-        LOGGER.info("Successfully reloaded locale {}", localeName);
-        return true;
     }
 
     /**
@@ -230,7 +289,29 @@ public final class Lingon {
      * @return an unmodifiable set of loaded locale names
      */
     public Set<String> getLoadedLocales() {
-        return Collections.unmodifiableSet(rawTextsByLocale.keySet());
+        synchronized (rawTextsByLocale) {
+            return Collections.unmodifiableSet(new HashSet<>(rawTextsByLocale.keySet()));
+        }
+    }
+
+    /**
+     * Check if a specific locale is currently loaded.
+     *
+     * @param locale the locale to check
+     * @return true if the locale is loaded, false otherwise
+     */
+    public boolean isLocaleLoaded(Locale locale) {
+        if (locale == null) {
+            return false;
+        }
+        String localeName = toDirectoryName(locale);
+        if (localeName == null) {
+            return false;
+        }
+
+        synchronized (rawTextsByLocale) {
+            return rawTextsByLocale.containsKey(localeName);
+        }
     }
 
     /**

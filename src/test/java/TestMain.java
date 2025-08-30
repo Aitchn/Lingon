@@ -10,7 +10,7 @@ public class TestMain {
         final Path lingonPath = Path.of(TEST_HOME).resolve("lingon");
 
 
-        Lingon lingon = new Lingon(TestMain.class, lingonPath, Locale.TAIWAN);
+        Lingon lingon = Lingon.getInstance(TestMain.class, lingonPath, Locale.TAIWAN);
         LingonLang lang = lingon.get(Locale.TAIWAN, "b.test");
 
         String text = lang.get("a.chat[1]");
