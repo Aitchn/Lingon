@@ -29,20 +29,25 @@ public final class LingonLang {
     }
 
     /**
-     * Get a localized string by key, with automatic fallback to default locale.
+     * Retrieves a localized value from the language data for the specified key.
+     * The primary language data is checked first. If the value is missing or null,
+     * the fallback language data is used. If no value is found in either source,
+     * a {@link LocalizedString} wrapping the key itself is returned.
      *
-     * @param key the key to lookup in the language data
-     * @return the localized string, or the key itself if not found in any locale
+     * @param key the key to resolve in the language data
+     * @return a {@link LocalizedString} containing the resolved value,
+     *         or wrapping the key if no value is found
      */
-    public String get(String key) {
+    public LocalizedString get(String key) {
         JsonNode node = getNodeAtPath(primaryLanguageData, key);
         if (isMissingOrNull(node)) {
             node = getNodeAtPath(fallbackLanguageData, key);
         }
         if (isMissingOrNull(node)) {
-            return key;
+            return new LocalizedString(key);
         }
-        return node.isTextual() ? node.asText() : node.toString();
+        String value = node.isTextual() ? node.asText() : node.toString();
+        return new LocalizedString(value);
     }
 
     /**
